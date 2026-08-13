@@ -124,6 +124,32 @@ class ASTCompilerEngine:
         return artifact
 
     async def run(self, session: aiohttp.ClientSession) -> List[Finding]:
-        target_js = f"{self.target.base_url.rstrip('/')}/static/js/app.js"
-        await self.analyze_js_bundle(session, target_js)
+        # Crawl main target HTML page to dynamically discover JavaScript scripts & bundles
+        discovered_js = set()
+        base_url = self.target.base_url.rstrip('/')
+
+        try:
+            async with session.get(base_url, headers=self.target.headers) as resp:
+                if resp.status == 200:
+                    html_content = await resp.text()
+                    script_matches = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
+                    preload_matches = re.findall(r'<link[^>]+href=["\']([^"\']+\.js[^"\']*)["\']', html_content, re.IGNORECASE)
+
+                    for src in script_matches + preload_matches:
+                        if src.startswith("http://") or src.startswith("https://"):
+                            discovered_js.add(src)
+                        elif src.startswith("/"):
+                            discovered_js.add(f"{base_url}{src}")
+                        else:
+                            discovered_js.add(f"{base_url}/{src}")
+        except Exception:
+            pass
+
+        if not discovered_js:
+            discovered_js.add(f"{base_url}/static/js/app.js")
+
+        for js_url in list(discovered_js)[:5]:  # Process top 5 bundles
+            await self.analyze_js_bundle(session, js_url)
+
         return self.findings
+
